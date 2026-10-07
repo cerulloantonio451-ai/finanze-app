@@ -170,7 +170,8 @@
 
 <script>
 const tg = window.Telegram && Telegram.WebApp;
-const inTelegram = !!(tg && tg.initData);
+// Dal pulsante in chat Telegram non fornisce initData: si riconosce Telegram dalla piattaforma.
+const inTelegram = !!(tg && (tg.initData || (tg.platform && tg.platform !== 'unknown')));
 if (tg) { tg.ready(); tg.expand(); }
 if (inTelegram) document.documentElement.classList.add('tg');
 
