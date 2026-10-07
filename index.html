@@ -53,6 +53,15 @@
   .amt{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
   .mini{border:none;background:color-mix(in srgb,var(--btn) 14%,transparent);color:var(--link);
     font:inherit;font-size:13px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer}
+  .edit{display:none;padding:0 16px 12px 62px;gap:8px;flex-wrap:wrap;align-items:center}
+  .edit.on{display:flex}
+  .edit input{flex:1 1 100%;border:1px solid var(--sep);background:var(--bg);color:var(--text);
+    font:inherit;font-size:16px;padding:9px 11px;border-radius:10px;outline:none}
+  .edit input:focus{border-color:var(--btn)}
+  .edit button{flex:1;border:none;font:inherit;font-size:14px;font-weight:600;padding:9px 6px;border-radius:10px;cursor:pointer}
+  .edit .meno{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+  .edit .piu{background:color-mix(in srgb,var(--btn) 14%,transparent);color:var(--link)}
+  .acts{display:flex;gap:6px;flex:none}
   .empty{padding:14px 16px;color:var(--hint);text-align:center}
   .kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
   .kpi{background:var(--sec);border-radius:var(--radius);padding:12px 14px}
@@ -305,7 +314,15 @@ function lista(el, rows, label){
     <div class="item"><div class="ico">${t==='c'?'🤝':'💸'}</div>
       <div class="main"><div class="t">${esc(p)}</div><div class="s">${esc(de?de+' · ':'')}${esc(q)}</div></div>
       <div class="amt ${t==='c'?'pos':'neg'}">${eur(imp)}</div>
-      <button class="mini" data-close="${id}" data-t="${t}">${label}</button></div>`).join('')
+      <div class="acts">
+        <button class="mini" data-edit="${id}" aria-label="Modifica importo">±</button>
+        <button class="mini" data-close="${id}" data-t="${t}">${label}</button>
+      </div></div>
+    <div class="edit" id="ed-${id}">
+      <input inputmode="decimal" placeholder="Importo (€)" id="ei-${id}">
+      <button class="meno" data-parz="${id}" data-s="-1">− ${t==='c'?'Ricevuti':'Restituiti'}</button>
+      <button class="piu" data-parz="${id}" data-s="1">+ ${t==='c'?'Prestato altro':'Altro debito'}</button>
+    </div>`).join('')
     : '<div class="empty">Niente in sospeso</div>';
 }
 function renderSosp(){
@@ -316,6 +333,26 @@ function renderSosp(){
     const r = so.find(x => x[0] == b.dataset.close);
     const msg = r[1]==='c' ? `Hai ricevuto ${eur(r[3])} da ${r[2]}?` : `Hai restituito ${eur(r[3])} a ${r[2]}?`;
     conferma(msg, () => invia({a:'chiudi', id:+b.dataset.close}));
+  });
+  document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const box = $('ed-'+b.dataset.edit), aperto = box.classList.contains('on');
+    document.querySelectorAll('.edit').forEach(x => x.classList.remove('on'));
+    if (!aperto){ box.classList.add('on'); $('ei-'+b.dataset.edit).focus(); }
+  });
+  document.querySelectorAll('[data-parz]').forEach(b => b.onclick = () => {
+    const id = +b.dataset.parz, r = so.find(x => x[0] == id);
+    const i = parseImp($('ei-'+id).value);
+    if (!i){ haptic('error'); $('ei-'+id).focus(); return; }
+    let msg;
+    if (b.dataset.s === '-1'){
+      const parte = Math.min(i, r[3]), resto = Math.round((r[3]-parte)*100)/100;
+      msg = (r[1]==='c' ? `Hai ricevuto ${eur(parte)} da ${r[2]}?` : `Hai restituito ${eur(parte)} a ${r[2]}?`)
+          + (resto > 0 ? ` Resteranno ${eur(resto)}.` : ' Il sospeso verrà chiuso.');
+    } else {
+      msg = r[1]==='c' ? `Aggiungere ${eur(i)}? ${r[2]} ti dovrà ${eur(r[3]+i)}.`
+                       : `Aggiungere ${eur(i)}? Dovrai ${eur(r[3]+i)} a ${r[2]}.`;
+    }
+    conferma(msg, () => invia({a:'parz', id, i: b.dataset.s === '-1' ? -i : i}));
   });
 }
 $('sSave').onclick = () => {
