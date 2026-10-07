@@ -107,12 +107,35 @@
     transition:.25s;pointer-events:none;z-index:9;max-width:90vw;text-align:center}
   .toast.on{opacity:1;transform:translateX(-50%)}
   .loading{padding:60px 0;text-align:center;color:var(--hint)}
+  .lock{max-width:380px;margin:9vh auto 0;text-align:center}
+  .lock .logo{font-size:46px;margin-bottom:6px}
+  .lock h2{margin:0 0 6px;font-size:22px}
+  .lock p{color:var(--hint);font-size:14px;margin:0 0 18px}
+  .lock .field{padding:6px 0 10px;text-align:left}
+  .lock .primary{width:100%;margin:8px 0 12px}
+  .lock .err{padding:0 0 6px;text-align:left;min-height:18px}
+  .linkbtn{border:none;background:none;color:var(--link);font:inherit;font-size:14px;cursor:pointer;padding:6px}
+  nav[hidden]{display:none}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div id="banner" class="banner" hidden></div>
   <div id="loading" class="loading">Caricamento…</div>
+
+  <!-- BLOCCO CON PASSWORD -->
+  <section class="lock" id="lock" hidden>
+    <div class="logo">🔒</div>
+    <h2 id="lkTitle">Finanze</h2>
+    <p id="lkText">Inserisci la password</p>
+    <form id="lkForm" autocomplete="off">
+      <div class="field"><input id="lkPw" type="password" placeholder="Password" autocomplete="current-password"></div>
+      <div class="field" id="lkPw2Box" hidden><input id="lkPw2" type="password" placeholder="Ripeti la password" autocomplete="new-password"></div>
+      <div class="err" id="lkErr"></div>
+      <button class="primary" id="lkBtn" type="submit">Sblocca</button>
+    </form>
+    <button class="linkbtn" id="lkForgot" hidden>Password dimenticata?</button>
+  </section>
 
   <!-- PANORAMICA -->
   <section class="view" id="v-home">
@@ -140,7 +163,13 @@
     <div class="card"><h3>Spese per categoria</h3><div id="cats"></div></div>
     <div class="card"><h3>Movimenti del mese</h3><div id="movs"></div></div>
     <details class="card" id="backup">
-      <summary>⚙️ Backup dei dati</summary>
+      <summary>⚙️ Impostazioni e backup</summary>
+      <div class="field"><label>Cambia password</label>
+        <input id="cpOld" type="password" placeholder="Password attuale" autocomplete="current-password" style="margin-bottom:8px">
+        <input id="cpNew" type="password" placeholder="Nuova password (almeno 4 caratteri)" autocomplete="new-password" style="margin-bottom:8px">
+        <input id="cpNew2" type="password" placeholder="Ripeti la nuova password" autocomplete="new-password"></div>
+      <div class="err" id="cpErr"></div>
+      <button class="primary" id="cpSave">Cambia password</button>
       <div class="field"><label>Copia questo testo e conservalo: serve per ripristinare i dati</label>
         <textarea id="bkTxt" rows="4" readonly></textarea></div>
       <button class="primary" id="bkCopy">Copia backup</button>
@@ -209,7 +238,7 @@
 
 <div class="toast" id="toast"></div>
 
-<nav><div class="in">
+<nav hidden><div class="in">
   <button data-v="home" class="on"><span>📊</span>Panoramica</button>
   <button data-v="add"><span>➕</span>Aggiungi</button>
   <button data-v="rate"><span>📆</span>Rate</button>
@@ -549,6 +578,132 @@ $('bkLoad').onclick = () => {
   $('bkIn').value='';
 };
 
+/* ================= Password =================
+   Nel cloud si salva solo {s: sale, h: impronta PBKDF2-SHA256}, mai la password. */
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function impronta(pw, saltB64){
+  const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'}, key, 256);
+  return {s: b64(salt), h: b64(bits)};
+}
+async function leggiPw(){
+  if (usaCloud){ try{ const v = await p(CS.getItem,'pw'); return v ? JSON.parse(v) : null; }catch(e){} }
+  try{ const v = localStorage.getItem('finanze_pw'); return v ? JSON.parse(v) : null; }catch(e){ return null; }
+}
+async function scriviPw(obj){
+  const v = obj ? JSON.stringify(obj) : '';
+  try{ obj ? localStorage.setItem('finanze_pw', v) : localStorage.removeItem('finanze_pw'); }catch(e){}
+  if (usaCloud) await (obj ? p(CS.setItem,'pw',v) : p(CS.removeItems,['pw']));
+}
+async function verificaPw(pw, salvata){
+  const x = await impronta(pw, salvata.s);
+  return x.h === salvata.h;
+}
+let pwSalvata = null, tentativi = 0, bloccoFino = 0;
+
+/* ---- Accesso riservato ----
+   PROPRIETARI: impronte SHA-256 degli ID Telegram che entrano direttamente.
+   ACCESSO: impronta del codice di accesso richiesto a tutti gli altri. */
+const PROPRIETARI = ['d6a65178f3b4a64ed8e403a0742ecf00e3d443d0223361dea021447e6a2d8c45'];
+const ACCESSO = {s:'c3gVt09is/Y6Syw5J0lGUQ==', h:'YTIJaIa9rl6+0+zSJVXAIEklkQzkc/IY7WquNpTO0lA='};
+let fase = 'pw';
+async function sha256hex(t){
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('');
+}
+async function eProprietario(){
+  const id = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+  return !!id && PROPRIETARI.includes(await sha256hex(String(id)));
+}
+async function accessoGiaConcesso(){
+  if (usaCloud){ try{ return (await p(CS.getItem,'acc')) === ACCESSO.h.slice(0,12); }catch(e){} }
+  try{ return localStorage.getItem('finanze_acc') === ACCESSO.h.slice(0,12); }catch(e){ return false; }
+}
+async function segnaAccesso(){
+  const v = ACCESSO.h.slice(0,12);
+  try{ localStorage.setItem('finanze_acc', v); }catch(e){}
+  if (usaCloud){ try{ await p(CS.setItem,'acc',v); }catch(e){} }
+}
+function mostraCodice(){
+  fase = 'codice';
+  $('loading').hidden = true; $('lock').hidden = false;
+  $('lkTitle').textContent = 'Accesso riservato';
+  $('lkText').textContent = 'Questa app è privata. Inserisci il codice di accesso.';
+  $('lkPw2Box').hidden = true; $('lkForgot').hidden = true;
+  $('lkPw').placeholder = 'Codice di accesso'; $('lkPw').type = 'text'; $('lkPw').autocomplete = 'off';
+  $('lkBtn').textContent = 'Entra';
+  setTimeout(() => $('lkPw').focus(), 50);
+}
+
+function mostraBlocco(primaVolta){
+  fase = 'pw';
+  $('lkPw').type = 'password'; $('lkPw').placeholder = 'Password'; $('lkPw').value = ''; $('lkErr').textContent = '';
+  $('loading').hidden = true; $('lock').hidden = false;
+  $('lkTitle').textContent = primaVolta ? 'Crea la tua password' : 'Finanze';
+  $('lkText').textContent = primaVolta
+    ? 'Servirà ogni volta che apri l\'app. Annotala: se la dimentichi non si può recuperare.'
+    : 'Inserisci la password per aprire i tuoi conti';
+  $('lkPw2Box').hidden = !primaVolta;
+  $('lkBtn').textContent = primaVolta ? 'Crea password' : 'Sblocca';
+  $('lkForgot').hidden = primaVolta;
+  $('lkPw').autocomplete = primaVolta ? 'new-password' : 'current-password';
+  setTimeout(() => $('lkPw').focus(), 50);
+}
+$('lkForm').onsubmit = async ev => {
+  ev.preventDefault();
+  const pw = $('lkPw').value, err = $('lkErr');
+  if (fase === 'codice'){
+    if (Date.now() < bloccoFino){ err.textContent = `Troppi tentativi: riprova tra ${Math.ceil((bloccoFino-Date.now())/1000)} secondi`; return; }
+    $('lkBtn').disabled = true;
+    const ok = await verificaPw(pw.trim().toUpperCase(), ACCESSO);
+    $('lkBtn').disabled = false;
+    if (!ok){
+      tentativi++; $('lkPw').value = ''; haptic('error');
+      if (tentativi >= 5){ bloccoFino = Date.now() + 60000; tentativi = 0; err.textContent = 'Troppi tentativi: attendi 60 secondi'; }
+      else err.textContent = `Codice errato (${5-tentativi} tentativi rimasti)`;
+      return;
+    }
+    tentativi = 0; haptic('success'); await segnaAccesso();
+    pwSalvata = await leggiPw(); mostraBlocco(!pwSalvata); return;
+  }
+  if (!pwSalvata){
+    if (pw.length < 4){ err.textContent = 'Usa almeno 4 caratteri'; haptic('error'); return; }
+    if (pw !== $('lkPw2').value){ err.textContent = 'Le due password non coincidono'; haptic('error'); return; }
+    $('lkBtn').disabled = true;
+    try{ pwSalvata = await impronta(pw); await scriviPw(pwSalvata); }
+    catch(e){ err.textContent = 'Non sono riuscito a salvare la password, riprova'; $('lkBtn').disabled = false; return; }
+    haptic('success'); apri(); return;
+  }
+  if (Date.now() < bloccoFino){ err.textContent = `Troppi tentativi: riprova tra ${Math.ceil((bloccoFino-Date.now())/1000)} secondi`; return; }
+  $('lkBtn').disabled = true;
+  const ok = await verificaPw(pw, pwSalvata);
+  $('lkBtn').disabled = false;
+  if (ok){ haptic('success'); apri(); return; }
+  tentativi++; $('lkPw').value = ''; haptic('error');
+  if (tentativi >= 5){ bloccoFino = Date.now() + 30000; tentativi = 0; err.textContent = 'Troppi tentativi: attendi 30 secondi'; }
+  else err.textContent = `Password errata (${5-tentativi} tentativi rimasti)`;
+};
+$('lkForgot').onclick = () => {
+  conferma('Senza password non si possono recuperare i dati. Vuoi CANCELLARE TUTTI i dati e creare una nuova password? (Potrai poi ripristinare un backup.)', () =>
+    conferma('Sei sicuro? Spese, rate e sospesi verranno eliminati.', async () => {
+      D = {v:2, n:1, m:[], r:[], s:[]}; await salva(); await scriviPw(null);
+      pwSalvata = null; $('lkErr').textContent = ''; $('lkPw').value = ''; mostraBlocco(true);
+      toast('Dati cancellati');
+    }));
+};
+$('cpSave').onclick = async () => {
+  const err = $('cpErr'), nuova = $('cpNew').value;
+  if (!(await verificaPw($('cpOld').value, pwSalvata))){ err.textContent = 'La password attuale non è corretta'; haptic('error'); return; }
+  if (nuova.length < 4){ err.textContent = 'La nuova password deve avere almeno 4 caratteri'; haptic('error'); return; }
+  if (nuova !== $('cpNew2').value){ err.textContent = 'Le due nuove password non coincidono'; haptic('error'); return; }
+  try{ pwSalvata = await impronta(nuova); await scriviPw(pwSalvata); }
+  catch(e){ err.textContent = 'Salvataggio non riuscito, riprova'; return; }
+  err.textContent = ''; ['cpOld','cpNew','cpNew2'].forEach(i => $(i).value = '');
+  haptic('success'); toast('🔒 Password cambiata');
+};
+
 /* ================= Navigazione e avvio ================= */
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x===b));
@@ -557,7 +712,9 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 });
 function render(){ renderHome(); renderRate(); renderSosp(); }
 
-(async function avvio(){
+async function apri(){
+  $('lock').hidden = true; $('lkPw').value = ''; $('lkPw2').value = ''; $('lkErr').textContent = '';
+  $('loading').hidden = false;
   const salvati = await carica();
   if (salvati && salvati.v === 2){
     D = salvati;
@@ -565,8 +722,15 @@ function render(){ renderHome(); renderRate(); renderSosp(); }
     await salva(); toast('📥 Dati importati dal bot');
   }
   if (!inTelegram) avviso('Stai usando l\'app fuori da Telegram: i dati restano solo in questo browser.');
-  $('loading').remove(); $('v-home').classList.add('on');
+  $('loading').hidden = true; document.querySelector('nav').hidden = false;
+  $('v-home').classList.add('on');
   renderCats(); render();
+}
+
+(async function avvio(){
+  if (!(await eProprietario()) && !(await accessoGiaConcesso())){ mostraCodice(); return; }
+  pwSalvata = await leggiPw();
+  mostraBlocco(!pwSalvata);
 })();
 </script>
 </body>
